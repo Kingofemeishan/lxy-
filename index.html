@@ -504,6 +504,9 @@
     .pol-set-title { font-size: 15px; font-weight: 650; color: var(--ink); }
     .pol-set-sub { font-size: 11.5px; color: var(--muted); }
     .pol-set-meta { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+    .pol-wrong-entry { flex: none; border: 1px solid #ecd5b2; background: #fdf3e6; color: #8a5a1f; border-radius: 8px; padding: 6px 11px; font-size: 12px; font-weight: 600; cursor: pointer; }
+    .pol-wrong-entry:hover { background: #fbe9cf; }
+    .pol-wrong-entry.block { width: 100%; margin-top: 12px; padding: 10px 12px; }
     .pol-set-body { padding: 4px 16px 16px; }
 
     .pol-paper-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
@@ -688,6 +691,17 @@
     .pol-anc-reset:hover { color: var(--ink); }
     .pol-verify { font-size: 11.5px; color: var(--muted); line-height: 1.7; border-top: 1px dashed var(--line); padding-top: 8px; }
     .pol-empty { padding: 26px 18px; text-align: center; color: var(--muted); font-size: 13px; line-height: 1.8; border: 1px dashed var(--line); border-radius: var(--radius); background: var(--surface); }
+
+    /* 错题本 */
+    .pol-wrong { display: grid; gap: 14px; }
+    .pol-wrong-toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .pol-wrong-list { display: grid; gap: 14px; }
+    .pol-wrong-group h3 { font-size: 14px; margin: 2px 0; display: flex; gap: 8px; align-items: baseline; color: var(--ink); }
+    .pol-wrong-group h3 span { font-size: 12px; color: var(--muted); font-weight: 400; }
+    .pol-wrong-item { border: 1px solid var(--line); border-radius: 13px; background: #fff; overflow: hidden; }
+    .pol-wrong-item.is-mastered { background: #f7fbf8; border-color: #cfe9d8; }
+    .pol-wrong-bar { display: flex; gap: 8px; flex-wrap: wrap; padding: 10px 14px 0; }
+    .pol-wrong-item .pol-card { border: 0; border-radius: 0; background: transparent; }
 
     @media (max-width: 1360px) {
       .pol-reader { grid-template-columns: 330px minmax(0, 1fr); }
@@ -895,6 +909,7 @@
           <div id="polShelf" class="pol-screen"></div>
           <div id="polReader" class="pol-screen" hidden></div>
           <div id="polPaper" class="pol-screen" hidden></div>
+          <div id="polWrong" class="pol-screen" hidden></div>
         </section>
     </main>
   </div>
@@ -42278,6 +42293,8 @@ window.YANTI_SHELF = {
         });
       });
     });
+    const POL_PART_TAG = {};
+    (POL_SHELF.books || []).forEach(b => (b.parts || []).forEach(p => { POL_PART_TAG[p.id] = p.tag; }));
     const POL_PAPER_INDEX = {};
     const POL_Q_INDEX = {};
     const POL_ANCHOR_Q = {};
@@ -42312,6 +42329,9 @@ window.YANTI_SHELF = {
     polState.picked = polState.picked || {};
     polState.graded = polState.graded || {};
     polState.marked = polState.marked || {};
+    polState.redoArm = polState.redoArm || {};
+    polState.wrongMode = ["time", "part"].includes(polState.wrongMode) ? polState.wrongMode : "time";
+    polState.wrongKind = ["all", "真题", "肖八"].includes(polState.wrongKind) ? polState.wrongKind : "all";
     polState.memorized = polState.memorized || {};
     polState.openSets = polState.openSets || { jing: false, xiao8: false };
     polState.treePeek = false;
@@ -42451,11 +42471,31 @@ window.YANTI_SHELF = {
       const right = graded.filter(q => polState.graded[q.id].ok).length;
       return { total: qs.length, graded: graded.length, right, rate: graded.length ? Math.round(right / graded.length * 100) : 0 };
     }
+    /* 错题本：归属大专题（马原/毛中特/习思想/史纲/思修），无锚点归未分类 */
+    function polPartOfQ(q) {
+      const anchors = polEffAnchor(q) || [];
+      for (const bid of anchors) {
+        const b = POL_BLOCK_INDEX[bid];
+        if (b && b.partId) { const p = POL_PART_INDEX[b.partId]; if (p) return p; }
+      }
+      return null;
+    }
+    function polWrongStats(id) {
+      const g = polState.graded[id];
+      if (!g) return { wrong: 0, redo: 0, mastered: false, lastAt: 0 };
+      const wrong = typeof g.wrongCount === "number" ? g.wrongCount : (g.ok ? 0 : 1);
+      const redo = g.redoCount || 0;
+      return { wrong, redo, mastered: !!g.ok, lastAt: g.lastAt || 0 };
+    }
+    function polWrongList() {
+      return Object.keys(polState.marked).filter(id => polState.marked[id] && POL_Q_INDEX[id]).map(id => POL_Q_INDEX[id]);
+    }
 
     function polHeadStatsHtml() {
       const book = polBookStats();
       const all = polGlobalStats();
-      return `<span class="pol-pill">背诵点 ${book.blocks}</span><span class="pol-pill">已背 ${book.memorized}</span><span class="pol-pill">题 ${all.total}</span><span class="pol-pill ok">已做 ${all.graded}</span><span class="pol-pill ok">正确率 ${all.rate}%</span>`;
+      const wrongN = Object.keys(polState.marked).filter(id => polState.marked[id] && POL_Q_INDEX[id]).length;
+      return `<span class="pol-pill">背诵点 ${book.blocks}</span><span class="pol-pill">已背 ${book.memorized}</span><span class="pol-pill">题 ${all.total}</span><span class="pol-pill ok">已做 ${all.graded}</span><span class="pol-pill ok">正确率 ${all.rate}%</span>${wrongN ? `<span class="pol-pill warn">错题 ${wrongN}</span>` : ""}`;
     }
     function polRefreshHead() {
       const el = $("#polHeadStats");
@@ -42466,22 +42506,27 @@ window.YANTI_SHELF = {
       $("#polShelf").hidden = s !== "shelf";
       $("#polReader").hidden = s !== "reader";
       $("#polPaper").hidden = s !== "paper";
+      $("#polWrong").hidden = s !== "wrong";
       /* 隐藏的容器一律清空，避免同一道题在多个界面各渲染一份、点击后重绘到看不见的那一份 */
       if (s !== "shelf") $("#polShelf").innerHTML = "";
       if (s !== "reader") $("#polReader").innerHTML = "";
       if (s !== "paper") $("#polPaper").innerHTML = "";
-      $("#polHeadTitle").textContent = s === "shelf" ? "考研政治 · 我的书架" : s === "reader" ? "考研政治 · 背诵手册" : "考研政治 · 做题";
+      if (s !== "wrong") $("#polWrong").innerHTML = "";
+      $("#polHeadTitle").textContent = s === "shelf" ? "考研政治 · 我的书架" : s === "reader" ? "考研政治 · 背诵手册" : s === "wrong" ? "考研政治 · 错题本" : "考研政治 · 做题";
       $("#polHeadDesc").textContent = s === "shelf"
         ? "左边是背诵资料（书），右边是做题资料（题集）。点一本书进去按目录读原文，点一套题集展开后选卷子做题。"
         : s === "reader"
           ? "右侧是全册连续长文，可整体上下滚动；左栏目录点击定位到对应专题/条目并高亮。每条末尾可以直接跳到挂在这一条上的题。"
-          : "顶部「历年真题 / 27肖八」切换来源，卷与卷分组排列；题卡按「第 N 题 · 资料名」编号，选完提交判分，展开原解析，答错自动进错题本。";
+          : s === "wrong"
+            ? "这里集中存放答错或手动标记的题：可按最近做错时间倒序查看，也可按大专题分组；每题标注错误次数 / 重做次数，可在本页直接重做。"
+            : "顶部「历年真题 / 27肖八」切换来源，卷与卷分组排列；题卡按「第 N 题 · 资料名」编号，选完提交判分，展开原解析，答错自动进错题本。";
       $("#polHeadStats").innerHTML = polHeadStatsHtml();
       const backBtn = $("#polHeadBack");
       if (backBtn) backBtn.hidden = s === "shelf";
       if (s === "shelf") renderPolShelf();
       if (s === "reader") renderPolReader();
       if (s === "paper") renderPolPaper();
+      if (s === "wrong") renderPolWrong();
     }
 
     /* ---------- 书架 ---------- */
@@ -42503,11 +42548,14 @@ window.YANTI_SHELF = {
         { id: "jing", title: "历年真题", sub: "2015—2026 · 12 套卷", kind: "真题", icon: "卷" },
         { id: "xiao8", title: "27肖八", sub: "（一）—（八） · 8 册", kind: "肖八", icon: "肖" }
       ];
+      const wrongAll = polWrongList();
+      const wrongCountOf = kind => wrongAll.filter(q => ((POL_PAPER_INDEX[q.paperId] || {}).kind) === kind).length;
       const setsHtml = setDefs.map(def => {
         const metas = (POL_SHELF.papers || []).filter(m => m.kind === def.kind);
         if (!metas.length) return "";
         const loadedQ = metas.reduce((n, m) => n + ((POL_PAPER_INDEX[m.id] || {}).questions || []).length, 0);
         const gradedQ = metas.reduce((n, m) => n + ((POL_PAPER_INDEX[m.id] || {}).questions || []).filter(q => polState.graded[q.id]).length, 0);
+        const wrongQ = wrongCountOf(def.kind);
         const open = Boolean(polState.openSets[def.id]);
         const items = metas.map(meta => {
           const paper = POL_PAPER_INDEX[meta.id] || { questions: [] };
@@ -42521,11 +42569,12 @@ window.YANTI_SHELF = {
           </button>`;
         }).join("");
         return `<div class="pol-set ${open ? "is-open" : ""}">
-          <button type="button" class="pol-set-head" data-pol-set="${def.id}">
+          <div class="pol-set-head" data-pol-set="${def.id}">
             <span class="pol-set-icon">${open ? "▾" : "▸"}</span>
             <span class="pol-set-info"><span class="pol-set-title">${esc(def.title)}</span><span class="pol-set-sub">${esc(def.sub)}</span></span>
             <span class="pol-set-meta">已录 ${loadedQ} 题${gradedQ ? " · 已做 " + gradedQ : ""}</span>
-          </button>
+            <button type="button" class="pol-wrong-entry" data-pol-wrong="${def.kind}">错题 ${wrongQ}</button>
+          </div>
           ${open ? `<div class="pol-set-body"><div class="pol-paper-grid">${items}</div></div>` : ""}
         </div>`;
       }).join("");
@@ -42544,6 +42593,7 @@ window.YANTI_SHELF = {
                 <span class="pol-book-meta">${partChips}</span>
               </span>
             </button>
+            <button type="button" class="pol-wrong-entry block" data-pol-wrong="all">错题本 · 全部 ${wrongAll.length} 题${wrongAll.some(q => polWrongStats(q.id).mastered) ? `（已掌握 ${wrongAll.filter(q => polWrongStats(q.id).mastered).length}）` : ""}</button>
             <div class="pol-shelf-note">目录树按原书结构：部分 → 专题（含「背诵自测总结」）→ 知识点条目，各级都能折叠。</div>
           </section>
           <section class="pol-shelf-col">
@@ -42597,6 +42647,57 @@ window.YANTI_SHELF = {
       const tipJing = uniq.length ? "真题考过：" + uniq.slice(0, 8).map(q => `${q.paperLabel} 第 ${q.no} 题`).join("、") + (uniq.length > 8 ? ` 等 ${uniq.length} 道` : "") : "未挂真题";
       const tipX8 = x8uniq.length ? "肖八挂题：" + x8uniq.slice(0, 8).map(q => `${q.paperLabel} 第 ${q.no} 题`).join("、") + (x8uniq.length > 8 ? ` 等 ${x8uniq.length} 道` : "") : "未挂肖八";
       return `<span class="pol-tree-nums"><span class="pol-tree-num ${n ? "hot" : ""}" title="${esc(tipJing)}">${n || 0}</span><span class="pol-tree-num x8 ${x8n ? "hot-x8" : ""}" title="${esc(tipX8)}">${x8n || 0}</span></span>`;
+    }
+
+    /* ---------- 错题本 ---------- */
+    function polWrongItem(q) {
+      const st = polWrongStats(q.id);
+      const part = polPartOfQ(q);
+      const kind = (POL_PAPER_INDEX[q.paperId] || {}).kind || "";
+      const last = st.mastered ? "最近答对" : "最近答错";
+      const bar = `<div class="pol-wrong-bar">
+        <span class="pol-pill ${kind === "肖八" ? "warn" : ""}">${esc(kind)}</span>
+        <span class="pol-pill ${st.mastered ? "ok" : "warn"}">错 ${st.wrong} · 重做 ${st.redo}</span>
+        <span class="pol-pill">${last}</span>
+        <span class="pol-pill">${part ? esc(POL_PART_TAG[part.id] || part.name || "") : "未分类"}</span>
+      </div>`;
+      return `<div class="pol-wrong-item${st.mastered ? " is-mastered" : ""}">${bar}${polCardHtml(q)}</div>`;
+    }
+    function renderPolWrong() {
+      let list = polWrongList();
+      if (polState.wrongKind !== "all") list = list.filter(q => ((POL_PAPER_INDEX[q.paperId] || {}).kind) === polState.wrongKind);
+      const mastered = list.filter(q => polWrongStats(q.id).mastered).length;
+      const modeTabs = [["time", "按时间倒序"], ["part", "按大专题分组"]];
+      const kindTabs = [["all", "全部"], ["真题", "真题"], ["肖八", "肖八"]];
+      let body = "";
+      if (!list.length) {
+        body = `<div class="pol-empty">错题本还是空的：做题时答错会自动收进这里，也可以在题卡上点「加入错题本」。</div>`;
+      } else if (polState.wrongMode === "time") {
+        list = list.slice().sort((a, b) => (polWrongStats(b.id).lastAt || 0) - (polWrongStats(a.id).lastAt || 0));
+        body = list.map(q => polWrongItem(q)).join("");
+      } else {
+        const order = POL_BOOK_PARTS.map(p => POL_PART_TAG[p.id] || p.name);
+        const groups = {};
+        list.forEach(q => { const p = polPartOfQ(q); const key = p ? (POL_PART_TAG[p.id] || p.name || "未分类") : "未分类"; (groups[key] = groups[key] || []).push(q); });
+        const keys = Object.keys(groups).sort((a, b) => {
+          if (a === "未分类") return 1;
+          if (b === "未分类") return -1;
+          return order.indexOf(a) - order.indexOf(b);
+        });
+        body = keys.map(key => {
+          const qs = groups[key];
+          return `<section class="pol-wrong-group"><h3>${esc(key)} <span>${qs.length} 题</span></h3><div class="pol-wrong-list">${qs.map(q => polWrongItem(q)).join("")}</div></section>`;
+        }).join("");
+      }
+      $("#polWrong").innerHTML = `
+        <div class="pol-wrong">
+          <div class="pol-wrong-toolbar">
+            <div class="pol-tabs">${modeTabs.map(([v, t]) => `<button type="button" class="pol-tab ${polState.wrongMode === v ? "is-active" : ""}" data-pol-wmode="${v}">${t}</button>`).join("")}</div>
+            <div class="pol-tabs">${kindTabs.map(([v, t]) => `<button type="button" class="pol-tab ${polState.wrongKind === v ? "is-active" : ""}" data-pol-wkind="${v}">${t}</button>`).join("")}</div>
+            <span class="pol-pill">共 ${list.length} 题 · 已掌握 ${mastered}</span>
+          </div>
+          <div class="pol-wrong-list">${body}</div>
+        </div>`;
     }
 
     function renderPolReader() {
@@ -42830,6 +42931,8 @@ window.YANTI_SHELF = {
       const picked = polState.picked[q.id] || [];
       const graded = polState.graded[q.id];
       const marked = polState.marked[q.id];
+      const arm = Boolean(polState.redoArm[q.id]);
+      const wst = polWrongStats(q.id);
       const showLayers = Boolean(graded) || polState.openLayers === q.id;
       const opts = q.options.map(opt => {
         const isPicked = picked.includes(opt.key || opt.k);
@@ -42837,20 +42940,20 @@ window.YANTI_SHELF = {
         const isAnswer = q.answer.includes(key);
         let cls = "pol-opt";
         if (isPicked) cls += " picked";
-        if (graded && isAnswer) cls += " right";
-        if (graded && isPicked && !isAnswer) cls += " wrong";
-        const verdict = graded && isAnswer ? `<span class="pol-verdict">正确项</span>` : (graded && isPicked && !isAnswer ? `<span class="pol-verdict">你错选</span>` : "");
+        if (graded && !arm && isAnswer) cls += " right";
+        if (graded && !arm && isPicked && !isAnswer) cls += " wrong";
+        const verdict = graded && !arm && isAnswer ? `<span class="pol-verdict">正确项</span>` : (graded && !arm && isPicked && !isAnswer ? `<span class="pol-verdict">你错选</span>` : "");
         return `<button type="button" class="${cls}" data-pol-option="${q.id}" data-pol-key="${key}"><span class="pol-opt-key">${key}</span><span>${esc(opt.text || opt.t)}</span>${verdict}</button>`;
       }).join("");
       const layerOpts = (q.explain.opts || []).map(o => `<li class="${o.v === "yes" ? "ok" : "no"}"><b>${o.k} ${o.v === "yes" ? "✓" : "✗"}</b>（${o.v === "yes" ? "正确项" : "干扰项"}）${esc(o.text)}</li>`).join("");
-      const feedback = graded
+      const feedback = (graded && !arm)
         ? `<div class="pol-feedback show ${graded.ok ? "ok" : "bad"}">${graded.ok ? `答对。正确答案 ${q.answer.join("")}，得分 ${q.score}/${q.score}。` : `答错。你的选择 ${graded.picked.join("") || "（未选）"}，正确答案 ${q.answer.join("")}。${q.type === "多选" ? "多选题多选、少选、错选均不得分。" : ""}`}</div>`
         : `<div class="pol-feedback"></div>`;
       const hasAnchorEdits = polHasAnchorEdits(q.id);
       return `<article class="pol-card" data-pol-card="${q.id}">
         <div class="pol-card-head">
           <span class="pol-qno">第 ${q.no} 题 · ${esc(q.paperLabel)}</span>
-          <span class="pol-qmeta"><span class="pol-pill type">${esc(q.type)}</span><span class="pol-pill">${q.score} 分</span><span class="pol-pill">正确答案 ${graded ? q.answer.join("") : "提交后揭晓"}</span></span>
+          <span class="pol-qmeta"><span class="pol-pill type">${esc(q.type)}</span><span class="pol-pill">${q.score} 分</span><span class="pol-pill">正确答案 ${graded && !arm ? q.answer.join("") : "提交后揭晓"}</span>${marked ? `<span class="pol-pill ${wst.mastered ? "ok" : "warn"}">错 ${wst.wrong} · 重做 ${wst.redo}</span>` : ""}</span>
         </div>
         <div class="pol-body">
           <div class="pol-stem">${esc(q.stem)}</div>
@@ -42863,7 +42966,8 @@ window.YANTI_SHELF = {
           </div>
           ${feedback}
           <div class="pol-actions">
-            <button type="button" class="btn btn-primary btn-small" data-pol-submit="${q.id}" ${graded ? "disabled" : ""}>${graded ? "已提交" : "提交并判分"}</button>
+            <button type="button" class="btn btn-primary btn-small" data-pol-submit="${q.id}" ${graded && !arm ? "disabled" : ""}>${arm ? "提交重做" : graded ? "已提交" : "提交并判分"}</button>
+            ${graded && !arm && marked ? `<button type="button" class="btn btn-secondary btn-small" data-pol-redo="${q.id}">重做本题</button>` : ""}
             <button type="button" class="btn btn-secondary btn-small" data-pol-toggle="${q.id}">${showLayers ? "收起解析" : "看解析"}</button>
             <button type="button" class="btn btn-soft btn-small" data-pol-mark="${q.id}">${marked ? "移出错题本" : "加入错题本"}</button>
           </div>
@@ -42882,13 +42986,21 @@ window.YANTI_SHELF = {
       const picked = polState.picked[id] || [];
       if (!picked.length) { toast("先选选项再提交"); return; }
       const ok = picked.length === q.answer.length && picked.every(k => q.answer.includes(k));
-      polState.graded[id] = { ok, picked, date: new Date().toLocaleDateString("zh-CN") };
+      const prev = polState.graded[id];
+      const attempts = (prev && prev.attempts || 0) + 1;
+      const prevWrong = prev ? (typeof prev.wrongCount === "number" ? prev.wrongCount : (prev.ok ? 0 : 1)) : 0;
+      const wrongCount = prevWrong + (ok ? 0 : 1);
+      const redoCount = prev ? ((prev.redoCount || 0) + 1) : 0;
+      polState.graded[id] = { ok, picked, date: new Date().toLocaleDateString("zh-CN"), lastAt: Date.now(), attempts, wrongCount, redoCount };
       if (!ok) polState.marked[id] = true;
+      delete polState.redoArm[id];
       polSave();
       if (polState.screen === "paper") {
         const y = window.scrollY;
         renderPolitics();
         window.scrollTo({ top: y, behavior: "instant" });
+      } else if (polState.screen === "wrong") {
+        renderPolitics();
       } else {
         if (cardEl && cardEl.isConnected) cardEl.outerHTML = polCardHtml(q); else renderPolitics();
         polRefreshHead();
@@ -42918,6 +43030,13 @@ window.YANTI_SHELF = {
         const paper = POL_PAPER_INDEX[id];
         if (!paper || !paper.questions.length) { toast(`「${(POL_SHELF.papers.find(p => p.id === id) || {}).label || id}」题目还没导入，等这一批数据到位后再点`); return; }
         polState.paperId = id; polState.paperKind = paper.kind || "真题"; polState.focusPaperId = id; polState.paperTab = "all"; polState.screen = "paper"; polSave(); renderPolitics(); return;
+      }
+      const wrongEntry = event.target.closest("[data-pol-wrong]");
+      if (wrongEntry) {
+        const v = wrongEntry.dataset.polWrong;
+        polState.wrongKind = v === "all" ? "all" : v;
+        polState.screen = "wrong"; polState.linked = false;
+        polSave(); renderPolitics(); return;
       }
       const setBtn = event.target.closest("[data-pol-set]");
       if (setBtn) { const id = setBtn.dataset.polSet; polState.openSets[id] = !polState.openSets[id]; polSave(); renderPolShelf(); return; }
@@ -42971,7 +43090,7 @@ window.YANTI_SHELF = {
       const opt = event.target.closest("[data-pol-option]");
       if (opt) {
         const id = opt.dataset.polOption, key = opt.dataset.polKey, q = POL_Q_INDEX[id];
-        if (polState.graded[id]) return;
+        if (polState.graded[id] && !polState.redoArm[id]) return;
         const current = polState.picked[id] || [];
         if (q.type === "单选") polState.picked[id] = current.includes(key) ? [] : [key];
         else polState.picked[id] = current.includes(key) ? current.filter(k => k !== key) : [...current, key].sort();
@@ -42995,13 +43114,27 @@ window.YANTI_SHELF = {
         const id = mark.dataset.polMark;
         polState.marked[id] = !polState.marked[id];
         polSave();
+        if (polState.screen === "wrong") { renderPolitics(); return; }
         const cardEl = mark.closest(".pol-card");
         if (cardEl && POL_Q_INDEX[id]) cardEl.outerHTML = polCardHtml(POL_Q_INDEX[id]); else renderPolitics();
         return;
       }
+      const redo = event.target.closest("[data-pol-redo]");
+      if (redo) {
+        const id = redo.dataset.polRedo;
+        polState.picked[id] = []; polState.redoArm[id] = true;
+        polSave();
+        const cardEl = redo.closest(".pol-card");
+        if (cardEl && POL_Q_INDEX[id]) cardEl.outerHTML = polCardHtml(POL_Q_INDEX[id]); else renderPolitics();
+        return;
+      }
+      const wmode = event.target.closest("[data-pol-wmode]");
+      if (wmode) { polState.wrongMode = wmode.dataset.polWmode; polSave(); renderPolitics(); return; }
+      const wkind = event.target.closest("[data-pol-wkind]");
+      if (wkind) { polState.wrongKind = wkind.dataset.polWkind; polSave(); renderPolitics(); return; }
       const reset = event.target.closest("[data-pol-reset]");
       if (reset) {
-        polState.picked = {}; polState.graded = {}; polState.marked = {};
+        polState.picked = {}; polState.graded = {}; polState.marked = {}; polState.redoArm = {};
         polSave(); renderPolitics(); toast("做题记录已清空（背诵标记、锚点改动保留）");
       }
     });
